@@ -157,7 +157,7 @@ def train_one_epoch_incremental(model: torch.nn.Module,
     acil_features = []
     acil_labels = []
 
-    for _ in metric_logger.log_every(range(len(data_loader)), print_freq, header):
+    for step, _ in enumerate(metric_logger.log_every(range(len(data_loader)), print_freq, header)):
         outputs = model(samples)
 
         # 解析 ACIL 分类器收集匹配 token
