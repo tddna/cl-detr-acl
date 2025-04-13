@@ -182,6 +182,8 @@ class DeformableDETR(nn.Module):
         if self.use_acil and self.acil_classifier is not None:
             # 在 forward 的结尾返回 decoder token（最后一层 hs）
             out['decoder_output'] = hs[-1]  # shape: [B, Q, D]
+            out['pred_logits'] = self.acil_classifier(hs[-1])
+        
         return out
 
     @torch.jit.unused

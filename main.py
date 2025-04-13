@@ -18,6 +18,7 @@ from datasets.incremental import generate_cls_order
 from engine import evaluate, train_one_epoch, train_one_epoch_incremental
 from models import build_model
 from tensorboardX import SummaryWriter
+from tqdm import tqdm
 
 from ACIL import ACILClassifierForDETR
 
@@ -217,7 +218,37 @@ def update_acil_classifier_from_dataloader(model, criterion, data_loader, device
         
     model.train()
 
+@torch.no_grad()
+def cache_positive_decoder_features(model, criterion, dataloader, device):
+    model.eval()
+    features = []
+    labels = []
+    print("Caching ACIL Features:")
+    for samples, targets in tqdm(dataloader):
+        samples = samples.to(device)
+        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
+        outputs = model(samples)
+
+        if all(len(t["labels"]) == 0 for t in targets):
+            continue  # ✅ 关键：跳过无目标样本
+
+        if "decoder_output" not in outputs or outputs["decoder_output"] is None:
+            continue  # 没有 decoder 特征也跳过
+
+        decoder_output = outputs["decoder_output"]
+        indices = criterion.matcher(outputs, targets)
+
+        X_fg, y_fg = extract_positive_queries_and_labels(decoder_output, targets, indices)
+        if X_fg.numel() > 0:
+            features.append(X_fg.cpu())
+            labels.append(y_fg.cpu())
+
+    if not features:
+        print("[Warning] No positive query features found.")
+        return None, None
+
+    return torch.cat(features, dim=0), torch.cat(labels, dim=0)
 
 def main(args):
     utils.init_distributed_mode(args)
@@ -425,9 +456,9 @@ def main(args):
                         'args': args,
                     }, checkpoint_path)
          
-            model.use_acil = True
+            model.module.use_acil = True
 
-            model.acil_classifier = ACILClassifierForDETR(
+            model.module.acil_classifier = ACILClassifierForDETR(
                 input_dim=model.module.class_embed[0].in_features,
                 num_classes=args.total_num_classes,  # 当前阶段所有类的总数（旧+新）
                 buffer_size=4096,
@@ -435,20 +466,17 @@ def main(args):
                 device=device,
                 dtype=torch.float  # or double
             )
+
             # 冻结特征提取模块（只保留回归头和 ACIL 头可更新）
             freeze_all_except(model, keywords=['bbox_embed', 'acil_classifier'])
-            
-            # 在这部分代码上再次进行训练，进行relign，ACIL头使用递归更新
-            for epoch in range(0, args.epochs):
-                if args.distributed:
-                    sampler_train.set_epoch(epoch)
-                train_stats = train_one_epoch_incremental(
-                    model, criterion, postprocessors, data_loader_train, optimizer, device, epoch, args.clip_max_norm)
 
-            if len(data_loader_train) > 0:
-                realign_acil_classifier(model, criterion, data_loader_train, device)
+            # 特征缓存 & 构建初始ACIL分类器
+            X_acil, y_acil = cache_positive_decoder_features(model, criterion, data_loader_train, device)
+            if X_acil is not None:
+                model.acil_classifier.fit(X_acil, y_acil)
             else:
-                print("Warning: Cannot realign ACIL classifier as training dataloader is empty")
+                print("跳过 ACIL 构建，因无正样本")
+            
             
         else:
  
