@@ -33,6 +33,7 @@ class HungarianMatcher(nn.Module):
         self.cost_giou = cost_giou
         assert cost_class != 0 or cost_bbox != 0 or cost_giou != 0, "all costs cant be 0"
 
+
     def forward(self, outputs, targets):
         """ Performs the matching
 

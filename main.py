@@ -20,14 +20,14 @@ from models import build_model
 from tensorboardX import SummaryWriter
 from tqdm import tqdm
 
-from ACIL import ACILClassifierForDETR
+# from models.ACIL import ACILClassifierForDETR
 
-from engine import extract_positive_queries_and_labels
+# from engine import extract_positive_queries_and_labels
 
 
 def get_args_parser():
     parser = argparse.ArgumentParser('Deformable DETR Detector', add_help=False)
-    parser.add_argument('--lr', default=2e-3, type=float)
+    parser.add_argument('--lr', default=2e-4, type=float)
     parser.add_argument('--lr_backbone_names', default=["backbone.0"], type=str, nargs='+')
     parser.add_argument('--lr_backbone', default=2e-5, type=float)
     parser.add_argument('--lr_linear_proj_names', default=['reference_points', 'sampling_offsets'], type=str, nargs='+')
@@ -116,7 +116,7 @@ def get_args_parser():
     parser.add_argument('--coco_panoptic_path', type=str)
     parser.add_argument('--remove_difficult', action='store_true')
 
-    parser.add_argument('--output_dir', default='',
+    parser.add_argument('--output_dir', default='./output',
                         help='path where to save, empty for no saving')
     parser.add_argument('--device', default='cuda',
                         help='device to use for training / testing')
@@ -142,113 +142,13 @@ def get_args_parser():
 
     parser.add_argument('--debug_mode', default=False, action='store_true')
     parser.add_argument('--balanced_ft', default=True, action='store_true')
-    parser.add_argument('--total_num_classes', default=81, type=int)
+    parser.add_argument('--total_num_classes', default=91, type=int)
+    
+
 
     return parser
 
 
-def freeze_all_except(model, keywords=['bbox_embed', 'acil_classifier']):
-    for name, param in model.named_parameters():
-        param.requires_grad = any(k in name for k in keywords)
-
-
-@torch.no_grad()
-def realign_acil_classifier(model, criterion, data_loader, device):
-    model.eval()
-
-    all_features = []
-    all_labels = []
-
-    for samples, targets in data_loader:
-        samples = samples.to(device)
-        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-
-        with torch.no_grad():
-            outputs = model(samples)
-            decoder_output = outputs.get("decoder_output", None)
-
-        # 匈牙利匹配
-        indices = criterion.matcher(outputs, targets)
-
-        # 提取正样本特征和标签
-        X_fg, y_fg = extract_positive_queries_and_labels(decoder_output, targets, indices)
-
-        if X_fg.numel() > 0:
-            all_features.append(X_fg)
-            all_labels.append(y_fg)
-
-    if all_features:
-        X_all = torch.cat(all_features, dim=0)
-        y_all = torch.cat(all_labels, dim=0)
-        print(f"Re-aligning ACIL classifier on {X_all.shape[0]} matched queries...")
-        model.acil_classifier.fit(X_all, y_all)
-    else:
-        print("Warning: No foreground queries found during ACIL Re-align!")
-        
-    model.train()
-    
-        
-# 解析式 ACIL 分类头更新（Re-fit on new class queries）
-@torch.no_grad()
-def update_acil_classifier_from_dataloader(model, criterion, data_loader, device):
-    model.eval()  # 不影响 requires_grad 的回归头参数
-    all_features = []
-    all_labels = []
-    for samples, targets in data_loader:
-        samples = samples.to(device)
-        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-
-        outputs = model(samples)
-        decoder_output = outputs.get("decoder_output", None)
-
-        indices = criterion.matcher(outputs, targets)
-        X_fg, y_fg = extract_positive_queries_and_labels(decoder_output, targets, indices)
-
-        if X_fg.numel() > 0:
-            all_features.append(X_fg)
-            all_labels.append(y_fg)
-
-    if all_features:
-        X_all = torch.cat(all_features, dim=0)
-        y_all = torch.cat(all_labels, dim=0)
-        model.acil_classifier.fit(X_all, y_all)
-        print(f"[ACIL] Updated on {X_all.shape[0]} new samples.")
-    else:
-        print("[ACIL] No foreground samples for fit.")
-        
-    model.train()
-
-@torch.no_grad()
-def cache_positive_decoder_features(model, criterion, dataloader, device):
-    model.eval()
-    features = []
-    labels = []
-    print("Caching ACIL Features:")
-    for samples, targets in tqdm(dataloader):
-        samples = samples.to(device)
-        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-
-        outputs = model(samples)
-
-        if all(len(t["labels"]) == 0 for t in targets):
-            continue  # ✅ 关键：跳过无目标样本
-
-        if "decoder_output" not in outputs or outputs["decoder_output"] is None:
-            continue  # 没有 decoder 特征也跳过
-
-        decoder_output = outputs["decoder_output"]
-        indices = criterion.matcher(outputs, targets)
-
-        X_fg, y_fg = extract_positive_queries_and_labels(decoder_output, targets, indices)
-        if X_fg.numel() > 0:
-            features.append(X_fg.cpu())
-            labels.append(y_fg.cpu())
-
-    if not features:
-        print("[Warning] No positive query features found.")
-        return None, None
-
-    return torch.cat(features, dim=0), torch.cat(labels, dim=0)
 
 def main(args):
     utils.init_distributed_mode(args)
@@ -441,7 +341,7 @@ def main(args):
                 test_stats, coco_evaluator = evaluate(
                     model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir
                 )
-                print("Testing results for all.")
+                print("Testing results for base_training.")
                 
             # 保存 phase_0.pth
             if args.output_dir:
@@ -456,37 +356,39 @@ def main(args):
                         'args': args,
                     }, checkpoint_path)
          
-            model.module.use_acil = True
-
-            model.module.acil_classifier = ACILClassifierForDETR(
-                input_dim=model.module.class_embed[0].in_features,
-                num_classes=args.total_num_classes,  # 当前阶段所有类的总数（旧+新）
-                buffer_size=4096,
-                gamma=1e-3,
-                device=device,
-                dtype=torch.float  # or double
+            # 修改 ACIL 模式
+            model.module.modify_acl_mode(buffer_size = 8192, gamma = 1e-3)
+            
+            # 读取缓存特征
+            hs,target_classes_onehot = criterion.get_acil_cache()
+            criterion.clear_acil_cache()
+            
+            model.module.acl_fit(hs,target_classes_onehot)
+            
+            test_stats, coco_evaluator = evaluate(
+                model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir
             )
-
-            # 冻结特征提取模块（只保留回归头和 ACIL 头可更新）
-            freeze_all_except(model, keywords=['bbox_embed', 'acil_classifier'])
-
-            # 特征缓存 & 构建初始ACIL分类器
-            X_acil, y_acil = cache_positive_decoder_features(model, criterion, data_loader_train, device)
-            if X_acil is not None:
-                model.acil_classifier.fit(X_acil, y_acil)
-            else:
-                print("跳过 ACIL 构建，因无正样本")
-            
-            
+            print("Testing results for phase_0.") 
+            # for epoch in range(0, args.epochs):
+            #     train_stats = train_one_epoch_incremental(model, criterion, data_loader_train, optimizer, device, epoch, args.clip_max_norm)
+            #     lr_scheduler.step()
+            #     test_stats, coco_evaluator = evaluate(
+            #         model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir
+            #     )
+            #     print("Testing results for phase_0.")
+                    
+                
         else:
- 
+
             for epoch in range(0, args.epochs):
                 if args.distributed:
                     sampler_train.set_epoch(epoch)
-                    
-                update_acil_classifier_from_dataloader(model, criterion, data_loader_train, device)
-                train_stats = train_one_epoch_incremental(
-                    model, criterion, postprocessors, data_loader_train, optimizer, device, epoch, args.clip_max_norm)
+                try:
+                    train_stats = train_one_epoch_incremental(
+                        model, criterion, postprocessors, data_loader_train, optimizer, device, epoch, args.clip_max_norm)
+                except Exception as e:
+                    print(f"训练过程中发生错误: {e}")
+                    # 继续下一个阶段或退出
 
                 lr_scheduler.step()
 
@@ -505,7 +407,7 @@ def main(args):
                 print("Testing results for new.")   
 
             if args.balanced_ft :
-                for epoch in range(0, 20):
+                for epoch in range(0, 1):
                     if args.distributed:
                         sampler_train_balanced.set_epoch(epoch)
 
