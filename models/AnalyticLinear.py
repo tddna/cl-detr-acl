@@ -103,8 +103,16 @@ class RecursiveLinear(AnalyticLinear):
         This implementation, which is different but equivalent to the equations shown in [1],
         is proposed in the G-ACIL [4], which supports mini-batch learning and the general CIL setting.
         """
-        # print(X.shape)
-        # print(Y.shape)
+        print("X.shape")
+        print(X.shape)
+        print("Y.shape")
+        print(Y.shape)
+
+        X = X.reshape(-1, X.shape[-1])
+        
+
+        Y = Y.reshape(-1, Y.shape[-1])
+        
         
         X, Y = X.to(self.weight), Y.to(self.weight)
         if self.bias:

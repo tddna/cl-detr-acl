@@ -25,12 +25,12 @@ from tqdm import tqdm
 
 def get_args_parser():
     parser = argparse.ArgumentParser('Deformable DETR Detector', add_help=False)
-    parser.add_argument('--lr', default=2e-3, type=float)
+    parser.add_argument('--lr', default=2e-4, type=float)
     parser.add_argument('--lr_backbone_names', default=["backbone.0"], type=str, nargs='+')
     parser.add_argument('--lr_backbone', default=2e-5, type=float)
     parser.add_argument('--lr_linear_proj_names', default=['reference_points', 'sampling_offsets'], type=str, nargs='+')
     parser.add_argument('--lr_linear_proj_mult', default=0.1, type=float)
-    parser.add_argument('--batch_size', default=4, type=int)
+    parser.add_argument('--batch_size', default=2, type=int)
     parser.add_argument('--weight_decay', default=1e-4, type=float)
     parser.add_argument('--epochs', default=1, type=int)
     parser.add_argument('--lr_drop', default=40, type=int)
@@ -114,7 +114,7 @@ def get_args_parser():
     parser.add_argument('--coco_panoptic_path', type=str)
     parser.add_argument('--remove_difficult', action='store_true')
 
-    parser.add_argument('--output_dir', default='./output',
+    parser.add_argument('--output_dir', default='',
                         help='path where to save, empty for no saving')
     parser.add_argument('--device', default='cuda',
                         help='device to use for training / testing')
@@ -146,51 +146,42 @@ def get_args_parser():
 
     return parser
 
+
 def save_evaluation_results(output_dir, phase_idx, test_stats, coco_evaluator, suffix=''):
-    """保存评估结果的通用函数
-    
-    Args:
-        output_dir (str or Path): 输出目录
-        phase_idx (int): 当前阶段索引
-        test_stats (dict): 测试统计信息
-        coco_evaluator (CocoEvaluator): COCO评估器
-        suffix (str, optional): 文件名后缀，默认为空
-    """
     if not output_dir:
         return
         
-    # 将字符串路径转换为Path对象
     output_dir = Path(output_dir)
-    
-    # 创建结果目录
     result_dir = output_dir / 'results'
     result_dir.mkdir(parents=True, exist_ok=True)
     
     # 构建文件名
-    stats_file = f'test_stats_phase_{phase_idx}{suffix}.json'
-    eval_file = f'coco_eval_phase_{phase_idx}{suffix}.json'
+    stats_file = f'test_stats_phase_{phase_idx}{suffix}.txt'
     
     try:
-        # 保存测试统计信息
         with open(result_dir / stats_file, 'w') as f:
-            json.dump(test_stats, f, indent=4)
-        
-        # 保存COCO评估结果
-        if coco_evaluator is not None:
-            eval_results = {}
-            for iou_type in coco_evaluator.coco_eval:
-                eval_results[iou_type] = coco_evaluator.coco_eval[iou_type].stats.tolist()
+            if coco_evaluator is not None:
+                for iou_type in coco_evaluator.coco_eval:
+                    stats = coco_evaluator.coco_eval[iou_type].stats
+                    f.write(f"IoU metric: {iou_type}\n")
+                    f.write(f" Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = {stats[0]:.3f}\n")
+                    f.write(f" Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets=100 ] = {stats[1]:.3f}\n")
+                    f.write(f" Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets=100 ] = {stats[2]:.3f}\n")
+                    f.write(f" Average Precision  (AP) @[ IoU=0.50:0.95 | area= small | maxDets=100 ] = {stats[3]:.3f}\n")
+                    f.write(f" Average Precision  (AP) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = {stats[4]:.3f}\n")
+                    f.write(f" Average Precision  (AP) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = {stats[5]:.3f}\n")
+                    f.write(f" Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=  1 ] = {stats[6]:.3f}\n")
+                    f.write(f" Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets= 10 ] = {stats[7]:.3f}\n")
+                    f.write(f" Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = {stats[8]:.3f}\n")
+                    f.write(f" Average Recall     (AR) @[ IoU=0.50:0.95 | area= small | maxDets=100 ] = {stats[9]:.3f}\n")
+                    f.write(f" Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = {stats[10]:.3f}\n")
+                    f.write(f" Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = {stats[11]:.3f}\n")
             
-            with open(result_dir / eval_file, 'w') as f:
-                json.dump(eval_results, f, indent=4)
-            
-            print(f"测试结果已保存到 {result_dir}")
-            print(f"文件: {stats_file}, {eval_file}")
+            print(f"测试结果已保存到 {result_dir}/{stats_file}")
             
     except Exception as e:
         print(f"保存评估结果时出错: {e}")
-
-
+         
 def main(args):
     utils.init_distributed_mode(args)
     print("git:\n  {}\n".format(utils.get_sha()))
@@ -212,8 +203,8 @@ def main(args):
     model.to(device)
 
     model_without_ddp = model
-    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print('number of params:', n_parameters)
+    # n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    # print('number of params:', n_parameters) --> 
         
 
     cls_order = generate_cls_order(seed=args.seed_cls)   
@@ -370,7 +361,33 @@ def main(args):
         epoch = 0
 
         ### h1.base training e.g 在40上训练
-        if phase_idx==0:        
+        if phase_idx==0:
+            
+            ckpt_path = './phase_0.pth'          
+            checkpoint = torch.load(ckpt_path, map_location='cpu')
+
+            missing_keys, unexpected_keys = model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
+            unexpected_keys = [k for k in unexpected_keys if not (k.endswith('total_params') or k.endswith('total_ops'))]
+            if len(missing_keys) > 0:
+                print('Missing Keys: {}'.format(missing_keys))
+            if len(unexpected_keys) > 0:
+                print('Unexpected Keys: {}'.format(unexpected_keys))
+            
+            p_groups = copy.deepcopy(optimizer.param_groups)
+            optimizer.load_state_dict(checkpoint['optimizer'])
+            for pg, pg_old in zip(optimizer.param_groups, p_groups):
+                pg['lr'] = pg_old['lr']
+                pg['initial_lr'] = pg_old['initial_lr']
+            print(optimizer.param_groups)
+            lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
+            args.override_resumed_lr_drop = True
+            if args.override_resumed_lr_drop:
+                print('Warning: (hack) args.override_resumed_lr_drop is set to True, so args.lr_drop would override lr_drop in resumed lr_scheduler.')
+                lr_scheduler.step_size = args.lr_drop
+                lr_scheduler.base_lrs = list(map(lambda group: group['initial_lr'], optimizer.param_groups))
+            lr_scheduler.step(lr_scheduler.last_epoch)
+            args.start_epoch = checkpoint['epoch'] + 1
+                    
             for epoch in range(0,args.epochs):
                 if args.distributed:
                     sampler_train.set_epoch(epoch)
@@ -386,19 +403,6 @@ def main(args):
             # 保存测试结果
             save_evaluation_results(args.output_dir, phase_idx, test_stats, coco_evaluator, suffix='_base')
 
-                
-            # # 保存 phase_0.pth
-            # if args.output_dir:
-            #     checkpoint_paths = [output_dir / 'checkpoint.pth']
-
-            #     for checkpoint_path in checkpoint_paths:
-            #         utils.save_on_master({
-            #             'model': model_without_ddp.state_dict(),
-            #             'optimizer': optimizer.state_dict(),
-            #             'lr_scheduler': lr_scheduler.state_dict(),
-            #             'epoch': epoch,
-            #             'args': args,
-            #         }, checkpoint_path)
          
             # 修改 ACIL 模式
             model.module.modify_acl_mode(buffer_size = 8192, gamma = 1e-3)
@@ -448,7 +452,7 @@ def main(args):
                 save_evaluation_results(args.output_dir, phase_idx, test_stats, coco_evaluator, suffix='_new')
      
             if args.balanced_ft :
-                for epoch in range(0, 1):
+                for epoch in range(0, 2):
                     if args.distributed:
                         sampler_train_balanced.set_epoch(epoch)
 
@@ -468,7 +472,7 @@ def main(args):
                         
                     test_stats, coco_evaluator = evaluate(model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir)
                     print("Balanced FT - Testing results for all.")                           
-                save_evaluation_results(args.output_dir, phase_idx, test_stats, coco_evaluator, suffix='_all')
+                save_evaluation_results(args.output_dir, phase_idx, test_stats, coco_evaluator, suffix='_F-all')
             
             if args.output_dir:
                 checkpoint_paths = [output_dir / 'checkpoint.pth']

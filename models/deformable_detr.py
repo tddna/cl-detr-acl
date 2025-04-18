@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 import math
+from tqdm import tqdm
 
 from util import box_ops
 from util.misc import (NestedTensor, nested_tensor_from_tensor_list,
@@ -216,9 +217,9 @@ class DeformableDETR(nn.Module):
 
     @torch.no_grad()
     def acl_fit(self, hs, target_classes_onehot):
-        for h,t in zip(hs,target_classes_onehot):
-            for l in range(h.shape[0]):
-                self.class_embed[l].fit(h[l],t)
+
+        for l in range(len(self.class_embed)):
+            self.class_embed[l].fit(hs[l], target_classes_onehot)
 
     @torch.no_grad()
     def acl_update(self):
@@ -320,13 +321,8 @@ class SetCriterion(nn.Module):
         if not enable_aux:
             assert 'dec_outputs' in outputs
             hs = outputs['dec_outputs'] 
-            
-            # print("hs的形状:", hs.shape)
-            
-            # print("hs中每个特征的维度:")
-            # for i, h in enumerate(hs):
-            #     print(f"  第{i+1}层特征形状: {h.shape}")
-            hs = hs.transpose(0,1).contiguous()
+
+            # hs = hs.transpose(0,1).contiguous()
             for f, l in zip(hs, target_classes_onehot):
                 self.acil_cache.append((f.detach().cpu(), l.detach().cpu()))   
         
@@ -496,9 +492,7 @@ class SetCriterion(nn.Module):
         
         # 3. 现在可以安全地堆叠
         feats = torch.stack(feats, dim=0)
-        print("feats的形状:", feats.shape)
         labels = torch.stack(labels,dim=0)
-        print("labels的形状:", labels.shape)
         return feats, labels
 
     def clear_acil_cache(self):

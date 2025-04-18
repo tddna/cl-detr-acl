@@ -70,7 +70,6 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
-
 def train_one_epoch_incremental(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, max_norm: float = 0):
